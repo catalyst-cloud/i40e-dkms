@@ -1,6 +1,6 @@
 Name: i40e
 Summary: Intel(R) 40-10 Gigabit Ethernet Connection Network Driver
-Version: 2.7.12
+Version: 2.15.9
 Release: 1
 Source: %{name}-%{version}.tar.gz
 Vendor: Intel Corporation
@@ -17,7 +17,15 @@ BuildRoot: %{_tmppath}/%{name}-%{version}-root
 %define _pcitable /usr/share/kudzu/pcitable /usr/share/hwdata/pcitable /dev/null
 %define pciids    %find %{_pciids}
 %define pcitable  %find %{_pcitable}
-Requires: kernel, fileutils, findutils, gawk, bash
+Requires: kernel, findutils, gawk, bash
+
+# Check for existence of %kernel_module_package_buildreqs ...
+%if 0%{?!kernel_module_package_buildreqs:1}
+# ... and provide a suitable definition if it is not defined
+%define kernel_module_package_buildreqs kernel-devel
+%endif
+
+BuildRequires: %kernel_module_package_buildreqs
 
 %description
 This package contains the Intel(R) 40-10 Gigabit Ethernet Connection Network Driver.
@@ -42,6 +50,7 @@ find lib -name "i40e.ko" \
 rm -rf %{buildroot}
 
 %files -f file.list
+
 %defattr(-,root,root)
 %{_mandir}/man7/i40e.7.gz
 %doc COPYING
@@ -75,6 +84,8 @@ bash -s %{pciids} \
 	%{name} \
 <<"END"
 #! /bin/bash
+# Copyright (C) 2017 Intel Corporation
+# For licensing information, see the file 'LICENSE' in the root folder
 # $1 = system pci.ids file to update
 # $2 = system pcitable file to update
 # $3 = file with new entries in pci.ids file format

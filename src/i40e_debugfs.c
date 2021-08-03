@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* Copyright(c) 2013 - 2018 Intel Corporation. */
+/* Copyright(c) 2013 - 2021 Intel Corporation. */
 
 #ifdef CONFIG_DEBUG_FS
 
@@ -190,8 +190,7 @@ static void i40e_dbg_dump_vsi_seid(struct i40e_pf *pf, int seid)
 	dev_info(&pf->pdev->dev, "    vlgrp is %s\n",
 		 vsi->vlgrp ? "<valid>" : "<null>");
 #else
-	dev_info(&pf->pdev->dev, "    active_vlans is %s\n",
-		 vsi->active_vlans ? "<valid>" : "<null>");
+	dev_info(&pf->pdev->dev, "    active_vlans is <valid>\n");
 #endif /* HAVE_VLAN_RX_REGISTER */
 	dev_info(&pf->pdev->dev,
 		 "    flags = 0x%016llx, netdev_registered = %i, current_netdev_flags = 0x%04x\n",
@@ -387,8 +386,9 @@ static void i40e_dbg_dump_vsi_seid(struct i40e_pf *pf, int seid)
 		 "    seid = %d, id = %d, uplink_seid = %d\n",
 		 vsi->seid, vsi->id, vsi->uplink_seid);
 	dev_info(&pf->pdev->dev,
-		 "    base_queue = %d, num_queue_pairs = %d, num_desc = %d\n",
-		 vsi->base_queue, vsi->num_queue_pairs, vsi->num_desc);
+		 "    base_queue = %d, num_queue_pairs = %d, num_tx_desc = %d, num_rx_desc = %d\n",
+		 vsi->base_queue, vsi->num_queue_pairs, vsi->num_tx_desc,
+		 vsi->num_rx_desc);
 	dev_info(&pf->pdev->dev, "    type = %i\n", vsi->type);
 	if (vsi->type == I40E_VSI_SRIOV)
 		dev_info(&pf->pdev->dev, "    VF ID = %i\n", vsi->vf_id);
@@ -981,8 +981,8 @@ static inline void i40e_dbg_dump_fdir_filter(struct i40e_pf *pf,
 					     struct i40e_fdir_filter *f)
 {
 	dev_info(&pf->pdev->dev, "fdir filter %d:\n", f->fd_id);
-	dev_info(&pf->pdev->dev, "    flow_type=%d ip4_proto=%d\n",
-		 f->flow_type, f->ip4_proto);
+	dev_info(&pf->pdev->dev, "    flow_type=%d ipl4_proto=%d\n",
+		 f->flow_type, f->ipl4_proto);
 	dev_info(&pf->pdev->dev, "    dst_ip= %pi4  dst_port=%d\n",
 		 &f->dst_ip, f->dst_port);
 	dev_info(&pf->pdev->dev, "    src_ip= %pi4  src_port=%d\n",
@@ -1030,6 +1030,7 @@ static ssize_t i40e_dbg_command_write(struct file *filp,
 				      size_t count, loff_t *ppos)
 {
 	struct i40e_pf *pf = filp->private_data;
+	const size_t buf_size_max = 256;
 	char *cmd_buf, *cmd_buf_tmp;
 	int bytes_not_copied;
 	struct i40e_vsi *vsi;
@@ -1041,6 +1042,9 @@ static ssize_t i40e_dbg_command_write(struct file *filp,
 	/* don't allow partial writes */
 	if (*ppos != 0)
 		return 0;
+	/* don't cross maximal possible value */
+	if (count >= buf_size_max)
+		return -ENOSPC;
 
 	cmd_buf = kzalloc(count + 1, GFP_KERNEL);
 	if (!cmd_buf)
@@ -1698,6 +1702,11 @@ static ssize_t i40e_dbg_command_write(struct file *filp,
 		}
 		pf->flags &= ~I40E_FLAG_DCB_ENABLED;
 	} else if (strncmp(cmd_buf, "dcb on", 6) == 0) {
+		if (pf->flags & I40E_FLAG_TC_MQPRIO) {
+			dev_info(&pf->pdev->dev,
+				 "Failed to enable DCB when TCs are configured through mqprio\n");
+			goto command_write_done;
+		}
 		pf->flags |= I40E_FLAG_DCB_ENABLED;
 	} else if (strncmp(cmd_buf, "lldp", 4) == 0) {
 		if (strncmp(&cmd_buf[5], "stop", 4) == 0) {
@@ -1709,7 +1718,7 @@ static ssize_t i40e_dbg_command_write(struct file *filp,
 					 "\"ethtool --set-priv-flags <interface> disable-fw-lldp on\".\n");
 				goto command_write_done;
 			}
-			ret = i40e_aq_stop_lldp(&pf->hw, false, NULL);
+			ret = i40e_aq_stop_lldp(&pf->hw, false, false, NULL);
 			if (ret) {
 				dev_info(&pf->pdev->dev,
 					 "Stop LLDP AQ command failed =0x%x\n",
@@ -1753,7 +1762,7 @@ static ssize_t i40e_dbg_command_write(struct file *filp,
 					 __func__, pf->hw.aq.asq_last_status);
 				/* Continue and start FW LLDP anyways */
 			}
-			ret = i40e_aq_start_lldp(&pf->hw, NULL);
+			ret = i40e_aq_start_lldp(&pf->hw, false, NULL);
 			if (ret) {
 				dev_info(&pf->pdev->dev,
 					 "Start LLDP AQ command failed =0x%x\n",
@@ -2300,30 +2309,7 @@ static ssize_t i40e_dbg_netdev_ops_write(struct file *filp,
 		count = buf_tmp - i40e_dbg_netdev_ops_buf + 1;
 	}
 
-	if (strncmp(i40e_dbg_netdev_ops_buf, "tx_timeout", 10) == 0) {
-		cnt = sscanf(&i40e_dbg_netdev_ops_buf[11], "%i", &vsi_seid);
-		if (cnt != 1) {
-			dev_info(&pf->pdev->dev, "tx_timeout <vsi_seid>\n");
-			goto netdev_ops_write_done;
-		}
-		vsi = i40e_dbg_find_vsi(pf, vsi_seid);
-		if (!vsi) {
-			dev_info(&pf->pdev->dev,
-				 "tx_timeout: VSI %d not found\n", vsi_seid);
-		} else if (!vsi->netdev) {
-			dev_info(&pf->pdev->dev, "tx_timeout: no netdev for VSI %d\n",
-				 vsi_seid);
-		} else if (test_bit(__I40E_VSI_DOWN, vsi->state)) {
-			dev_info(&pf->pdev->dev, "tx_timeout: VSI %d not UP\n",
-				 vsi_seid);
-		} else if (rtnl_trylock()) {
-			vsi->netdev->netdev_ops->ndo_tx_timeout(vsi->netdev);
-			rtnl_unlock();
-			dev_info(&pf->pdev->dev, "tx_timeout called\n");
-		} else {
-			dev_info(&pf->pdev->dev, "Could not acquire RTNL - please try again\n");
-		}
-	} else if (strncmp(i40e_dbg_netdev_ops_buf, "change_mtu", 10) == 0) {
+	if (strncmp(i40e_dbg_netdev_ops_buf, "change_mtu", 10) == 0) {
 		int mtu;
 
 		cnt = sscanf(&i40e_dbg_netdev_ops_buf[11], "%i %i",
@@ -2415,7 +2401,6 @@ static ssize_t i40e_dbg_netdev_ops_write(struct file *filp,
 		dev_info(&pf->pdev->dev, "unknown command '%s'\n",
 			 i40e_dbg_netdev_ops_buf);
 		dev_info(&pf->pdev->dev, "available commands\n");
-		dev_info(&pf->pdev->dev, "  tx_timeout <vsi_seid>\n");
 		dev_info(&pf->pdev->dev, "  change_mtu <vsi_seid> <mtu>\n");
 		dev_info(&pf->pdev->dev, "  set_rx_mode <vsi_seid>\n");
 		dev_info(&pf->pdev->dev, "  napi <vsi_seid>\n");
