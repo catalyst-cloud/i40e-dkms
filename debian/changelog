@@ -1,3 +1,9 @@
+i40e-dkms (2.15.9-1) unstable; urgency=medium
+
+  * New upstream release 
+
+ -- Andrew Ruthven <puck@catalystcloud.nz>  Tue, 03 Aug 2021 10:07:00 +0000
+
 i40e-dkms (2.7.12-1) unstable; urgency=medium
 
   * New upstream version 2.7.12
